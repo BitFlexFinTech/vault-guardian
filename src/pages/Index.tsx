@@ -1,28 +1,56 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
+import { History } from 'lucide-react';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useTradingEngine } from '@/hooks/useTradingEngine';
+import { useVaultPersistence } from '@/hooks/useVaultPersistence';
 import { Header } from '@/components/Header';
 import { StatusBar } from '@/components/StatusBar';
 import { MetricsPanel } from '@/components/MetricsPanel';
-import { AssetHeatmap } from '@/components/AssetHeatmap';
+import { ChartGrid } from '@/components/ChartGrid';
 import { Terminal } from '@/components/Terminal';
 import { ControlPanel } from '@/components/ControlPanel';
-import { ASSET_WHITELIST } from '@/lib/constants';
+import { TradeHistory } from '@/components/TradeHistory';
+import { Button } from '@/components/ui/button';
+import { ASSET_WHITELIST, type Trade } from '@/lib/constants';
 
 const Index = () => {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [persistedTrades, setPersistedTrades] = useState<Trade[]>([]);
+
+  // Persistence hook
+  const { loadSettings, saveSettings, saveTrade, loadTrades } = useVaultPersistence((type, message) => {
+    addLog(type, message);
+  });
+
+  // Trading engine with persistence callbacks
   const {
     state,
     logs,
+    trades,
     assetMetrics,
+    priceHistory,
     startEngine,
     stopEngine,
     toggleTrainingMode,
     updateDailyLossLimit,
+    updateFromPersistence,
     addLog,
     processTick,
     canStartLive,
-  } = useTradingEngine(0, 'USD', () => {});
+  } = useTradingEngine(
+    0, 
+    'USD', 
+    () => {},
+    // On trade saved
+    async (trade) => {
+      await saveTrade(trade);
+    },
+    // On settings changed
+    async (settings) => {
+      await saveSettings(settings);
+    }
+  );
 
   const handleMessage = useCallback((msg: { msg_type?: string; tick?: { symbol: string; quote: number } }) => {
     if (msg.msg_type === 'tick' && msg.tick) {
@@ -43,6 +71,26 @@ const Index = () => {
     lastError,
   } = useWebSocket(handleMessage, handleLog);
 
+  // Load persisted settings on mount
+  useEffect(() => {
+    const loadPersistedData = async () => {
+      const settings = await loadSettings();
+      if (settings) {
+        updateFromPersistence({
+          vault: settings.vault_balance,
+          protectedFloor: settings.protected_floor,
+          dailyLossLimit: settings.daily_loss_limit,
+          minProbability: settings.min_probability,
+        });
+      }
+
+      const savedTrades = await loadTrades();
+      setPersistedTrades(savedTrades);
+    };
+
+    loadPersistedData();
+  }, [loadSettings, loadTrades, updateFromPersistence]);
+
   // Subscribe to assets when authorized
   useEffect(() => {
     if (isAuthorized) {
@@ -50,12 +98,10 @@ const Index = () => {
     }
   }, [isAuthorized, subscribe]);
 
-  // Update engine state with WebSocket data
-  useEffect(() => {
-    if (balance > 0) {
-      // Balance updates handled in useTradingEngine
-    }
-  }, [balance, currency]);
+  // Combine current session trades with persisted
+  const allTrades = [...trades, ...persistedTrades.filter(pt => 
+    !trades.some(t => t.id === pt.id)
+  )];
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-background">
@@ -80,17 +126,31 @@ const Index = () => {
             <MetricsPanel state={{ ...state, balance, currency }} />
           </motion.section>
 
-          {/* Asset Heatmap */}
+          {/* Charts Grid */}
           <motion.section
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2 }}
-            className="flex-1"
+            className="flex-1 min-h-0"
           >
-            <h2 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wide">
-              Asset Heatmap
-            </h2>
-            <AssetHeatmap metrics={assetMetrics} />
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+                Live Charts
+              </h2>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => setHistoryOpen(true)}
+              >
+                <History className="h-4 w-4" />
+                Trade History
+              </Button>
+            </div>
+            <ChartGrid 
+              priceHistory={priceHistory} 
+              metrics={assetMetrics}
+            />
           </motion.section>
         </main>
 
@@ -121,6 +181,14 @@ const Index = () => {
           </motion.div>
         </aside>
       </div>
+
+      {/* Trade History Modal */}
+      <TradeHistory
+        trades={allTrades}
+        onLoadTrades={loadTrades}
+        isOpen={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      />
     </div>
   );
 };
