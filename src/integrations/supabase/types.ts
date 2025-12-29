@@ -14,7 +14,114 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      daily_sessions: {
+        Row: {
+          created_at: string
+          daily_loss: number
+          id: string
+          losses: number
+          session_date: string
+          total_profit: number
+          total_trades: number
+          updated_at: string
+          wins: number
+        }
+        Insert: {
+          created_at?: string
+          daily_loss?: number
+          id?: string
+          losses?: number
+          session_date?: string
+          total_profit?: number
+          total_trades?: number
+          updated_at?: string
+          wins?: number
+        }
+        Update: {
+          created_at?: string
+          daily_loss?: number
+          id?: string
+          losses?: number
+          session_date?: string
+          total_profit?: number
+          total_trades?: number
+          updated_at?: string
+          wins?: number
+        }
+        Relationships: []
+      }
+      trade_history: {
+        Row: {
+          created_at: string
+          direction: string
+          id: string
+          is_training: boolean
+          payout: number
+          probability: number
+          profit: number
+          result: string
+          stake: number
+          symbol: string
+          timestamp: string
+        }
+        Insert: {
+          created_at?: string
+          direction: string
+          id?: string
+          is_training?: boolean
+          payout?: number
+          probability: number
+          profit?: number
+          result: string
+          stake: number
+          symbol: string
+          timestamp?: string
+        }
+        Update: {
+          created_at?: string
+          direction?: string
+          id?: string
+          is_training?: boolean
+          payout?: number
+          probability?: number
+          profit?: number
+          result?: string
+          stake?: number
+          symbol?: string
+          timestamp?: string
+        }
+        Relationships: []
+      }
+      vault_settings: {
+        Row: {
+          created_at: string
+          daily_loss_limit: number
+          id: string
+          min_probability: number
+          protected_floor: number
+          updated_at: string
+          vault_balance: number
+        }
+        Insert: {
+          created_at?: string
+          daily_loss_limit?: number
+          id?: string
+          min_probability?: number
+          protected_floor?: number
+          updated_at?: string
+          vault_balance?: number
+        }
+        Update: {
+          created_at?: string
+          daily_loss_limit?: number
+          id?: string
+          min_probability?: number
+          protected_floor?: number
+          updated_at?: string
+          vault_balance?: number
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

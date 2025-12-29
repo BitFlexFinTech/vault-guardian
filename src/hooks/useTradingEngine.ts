@@ -51,20 +51,25 @@ interface UseTradingEngineReturn {
   logs: LogEntry[];
   trades: Trade[];
   assetMetrics: AssetMetrics[];
+  priceHistory: Record<string, number[]>;
   startEngine: () => void;
   stopEngine: () => void;
   toggleTrainingMode: () => void;
   updateDailyLossLimit: (limit: number) => void;
+  updateFromPersistence: (settings: { vault: number; protectedFloor: number; dailyLossLimit: number; minProbability: number }) => void;
   addLog: (type: LogType, message: string, data?: Record<string, unknown>) => void;
   processTick: (symbol: string, price: number) => void;
   processTradeResult: (result: 'WIN' | 'LOSS', profit: number) => void;
   canStartLive: boolean;
+  getLatestTrade: () => Trade | null;
 }
 
 export function useTradingEngine(
   balance: number,
   currency: string,
-  sendMessage: (msg: object) => void
+  sendMessage: (msg: object) => void,
+  onTradeSaved?: (trade: Trade) => void,
+  onSettingsChanged?: (settings: { vault_balance: number; protected_floor: number; daily_loss_limit: number; min_probability: number }) => void
 ): UseTradingEngineReturn {
   const [state, setState] = useState<EngineState>({
     isRunning: false,
@@ -106,7 +111,8 @@ export function useTradingEngine(
   );
 
   const priceHistory = useRef<Record<string, number[]>>({});
-  const tradeTimeout = useRef<NodeJS.Timeout | null>(null);
+  const [priceHistoryState, setPriceHistoryState] = useState<Record<string, number[]>>({});
+  const latestTrade = useRef<Trade | null>(null);
 
   // Update balance from WebSocket
   useEffect(() => {
@@ -121,7 +127,17 @@ export function useTradingEngine(
       message,
       data,
     };
-    setLogs(prev => [entry, ...prev.slice(0, 199)]); // Keep last 200 logs
+    setLogs(prev => [entry, ...prev.slice(0, 199)]);
+  }, []);
+
+  const updateFromPersistence = useCallback((settings: { vault: number; protectedFloor: number; dailyLossLimit: number; minProbability: number }) => {
+    setState(prev => ({
+      ...prev,
+      vault: settings.vault,
+      protectedFloor: settings.protectedFloor,
+      dailyLossLimit: settings.dailyLossLimit,
+      minProbability: settings.minProbability,
+    }));
   }, []);
 
   const processTick = useCallback((symbol: string, price: number) => {
@@ -137,6 +153,9 @@ export function useTradingEngine(
     if (priceHistory.current[symbol].length > 100) {
       priceHistory.current[symbol] = priceHistory.current[symbol].slice(-100);
     }
+
+    // Update state for chart rendering
+    setPriceHistoryState({ ...priceHistory.current });
 
     const prices = priceHistory.current[symbol];
     const rsi = calculateRSI(prices, TRADING_CONFIG.RSI_PERIOD);
@@ -162,7 +181,6 @@ export function useTradingEngine(
     if (!prices || prices.length < 20) return null;
 
     const rsi = calculateRSI(prices, TRADING_CONFIG.RSI_PERIOD);
-    const ema = calculateEMA(prices, TRADING_CONFIG.EMA_PERIOD);
     const currentPrice = prices[prices.length - 1];
     const prevPrice = prices[prices.length - 2];
 
@@ -182,6 +200,7 @@ export function useTradingEngine(
     }
 
     // EMA confirmation
+    const ema = calculateEMA(prices, TRADING_CONFIG.EMA_PERIOD);
     if (direction === 'CALL' && currentPrice > ema) {
       probability += 5;
     } else if (direction === 'PUT' && currentPrice < ema) {
@@ -229,6 +248,8 @@ export function useTradingEngine(
       };
 
       setTrades(prev => [trade, ...prev]);
+      latestTrade.current = trade;
+      onTradeSaved?.(trade);
       processTradeResult(mockResult, trade.profit);
       addLog('trade', `[PAPER] ${direction} ${symbol} @ ${probability.toFixed(1)}% → ${mockResult}`, { trade });
     } else {
@@ -249,7 +270,7 @@ export function useTradingEngine(
       addLog('info', `Proposal sent: ${direction} ${symbol} @ $${stake.toFixed(2)}`);
       setState(prev => ({ ...prev, currentSymbol: symbol }));
     }
-  }, [state, addLog, sendMessage]);
+  }, [state, addLog, sendMessage, onTradeSaved]);
 
   const processTradeResult = useCallback((result: 'WIN' | 'LOSS', profit: number) => {
     setState(prev => {
@@ -268,6 +289,13 @@ export function useTradingEngine(
       if (profit >= 1.00) {
         newVault += 1.00;
         newFloor += 1.00;
+        // Persist to database
+        onSettingsChanged?.({
+          vault_balance: newVault,
+          protected_floor: newFloor,
+          daily_loss_limit: prev.dailyLossLimit,
+          min_probability: prev.minProbability,
+        });
       }
 
       // Stake adjustment (Martingale-lite)
@@ -308,7 +336,7 @@ export function useTradingEngine(
         paperTradesCount: newPaperTrades,
       };
     });
-  }, []);
+  }, [onSettingsChanged]);
 
   const startEngine = useCallback(() => {
     if (state.isTraining && state.paperTradesCount < TRAINING_CONFIG.MIN_PAPER_TRADES) {
@@ -327,9 +355,6 @@ export function useTradingEngine(
 
   const stopEngine = useCallback(() => {
     setState(prev => ({ ...prev, isRunning: false, currentSymbol: null }));
-    if (tradeTimeout.current) {
-      clearTimeout(tradeTimeout.current);
-    }
     addLog('warning', 'Engine stopped');
   }, [addLog]);
 
@@ -344,8 +369,16 @@ export function useTradingEngine(
 
   const updateDailyLossLimit = useCallback((limit: number) => {
     setState(prev => ({ ...prev, dailyLossLimit: limit }));
+    onSettingsChanged?.({
+      vault_balance: state.vault,
+      protected_floor: state.protectedFloor,
+      daily_loss_limit: limit,
+      min_probability: state.minProbability,
+    });
     addLog('info', `Daily loss limit set to $${limit.toFixed(2)}`);
-  }, [addLog]);
+  }, [addLog, onSettingsChanged, state.vault, state.protectedFloor, state.minProbability]);
+
+  const getLatestTrade = useCallback(() => latestTrade.current, []);
 
   // Auto-trading loop
   useEffect(() => {
@@ -371,7 +404,7 @@ export function useTradingEngine(
       if (bestSignal) {
         executeTrade(bestSignal.symbol, bestSignal.direction, bestSignal.probability);
       }
-    }, 2000); // Check every 2 seconds
+    }, 2000);
 
     return () => clearInterval(interval);
   }, [state.isRunning, state.dailyLoss, state.dailyLossLimit, analyzeSignal, executeTrade, stopEngine, addLog]);
@@ -383,13 +416,16 @@ export function useTradingEngine(
     logs,
     trades,
     assetMetrics,
+    priceHistory: priceHistoryState,
     startEngine,
     stopEngine,
     toggleTrainingMode,
     updateDailyLossLimit,
+    updateFromPersistence,
     addLog,
     processTick,
     processTradeResult,
     canStartLive,
+    getLatestTrade,
   };
 }
